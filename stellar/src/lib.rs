@@ -12,7 +12,7 @@ impl Client {
         Ok(Client { kp, network })
     }
 
-    pub fn sign(&self, mut tx: Transaction) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn sign(&self, tx: Transaction) -> Result<(), Box<dyn std::error::Error>> {
         Ok(sign(&self.kp, tx)?)
     }
 }

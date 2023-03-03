@@ -1,0 +1,9 @@
+[package]
+name = "tf-stellar"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+stellar-base = "0.5.0"
+stellar-horizon = "0.6"
+sodiumoxide = "0.2.5"
