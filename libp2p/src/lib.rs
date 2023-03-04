@@ -2,16 +2,19 @@ use either::Either;
 use futures::prelude::*;
 
 use libp2p::{
-    core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version},
+    core::{
+        muxing::StreamMuxerBox, transport, transport::upgrade::Version, transport::OrTransport,
+    },
     identify,
     identity::Keypair,
     multiaddr::Protocol,
     noise, ping,
     pnet::{PnetConfig, PreSharedKey},
     relay,
-    swarm::{keep_alive, NetworkBehaviour, SwarmEvent},
+    swarm::{keep_alive, NetworkBehaviour, Swarm, SwarmEvent},
+    tcp,
     yamux::YamuxConfig,
-    Multiaddr, PeerId, Swarm, Transport,
+    Multiaddr, PeerId, Transport,
 };
 
 use std::{error::Error, fs, path::Path, str::FromStr, time::Duration};
@@ -41,8 +44,6 @@ impl Libp2pHost {
         };
 
         let local_peer_id = PeerId::from(kp.public());
-
-        // Build the relay transport and behaviour
         let (relay_transport, behaviour) = relay::client::new(local_peer_id);
 
         let transport = match psk {
@@ -50,7 +51,10 @@ impl Libp2pHost {
             None => libp2p::development_transport(kp.clone()).await?,
         };
 
-        let swarm = Swarm::with_async_std_executor(
+        // let (relay_transport, behaviour) = relay::client::new(local_peer_id);
+        // let transport = OrTransport::new(relay_transport, transport);
+
+        let swarm = Swarm::with_tokio_executor(
             transport,
             Behaviour {
                 ping: ping::Behaviour::new(ping::Config::new()),
@@ -71,35 +75,58 @@ impl Libp2pHost {
         })
     }
 
-    pub async fn start(mut self, relay: String, peer_id: &str) -> Result<(), Box<dyn Error>> {
-        println!("parsing relay addr");
+    pub async fn start_relay_client(
+        mut self,
+        relay: String,
+        port: i32,
+        peer_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
         let relay_peer_id = PeerId::from_str(peer_id)?;
-        println!("parsing relay peer id");
         let relay_addr: Multiaddr = relay.parse()?;
 
-        let dest_relay_addr = relay_addr.clone().with(Protocol::P2p(relay_peer_id.into()));
-
-        // let mut client_addr: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse()?;
-        let client_addr = relay_addr
+        let dest_relay_addr = relay_addr
             .clone()
             .with(Protocol::P2p(relay_peer_id.into()))
             .with(Protocol::P2pCircuit);
 
-        let client_addr_with_id = client_addr
-            .clone()
-            .with(Protocol::P2p(self.local_peer_id.into()));
+        println!("dest relay addr: {:?}", dest_relay_addr.clone());
 
-        println!("listening on {:?}", client_addr.clone());
-        self.swarm.listen_on(client_addr)?;
+        self.swarm.listen_on(
+            dest_relay_addr
+                .clone()
+                .with(Protocol::P2p(self.local_peer_id.into())),
+        )?;
 
-        println!("dest relay addr: {:?}", dest_relay_addr);
         self.swarm.dial(dest_relay_addr.clone())?;
 
-        println!("making reservation...");
-        wait_for_reservation(&mut self, client_addr_with_id, relay_peer_id, false).await;
+        // println!("making reservation...");
+        // wait_for_reservation(&mut self, client_addr_with_id, relay_peer_id, false).await;
 
-        // Do processing
-        Ok(())
+        loop {
+            match self.swarm.select_next_some().await {
+                SwarmEvent::NewListenAddr {
+                    listener_id,
+                    address,
+                } => {
+                    println!("{:?} listening on {}", listener_id, address)
+                }
+                SwarmEvent::Dialing(peer_id) => {
+                    println!("dialing peer: {}", peer_id);
+                }
+                SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == relay_peer_id => {
+                    println!("connected to relay");
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {
+                    println!("pong")
+                }
+                SwarmEvent::OutgoingConnectionError { peer_id, .. }
+                    if peer_id == Some(relay_peer_id) =>
+                {
+                    println!("outgoing conn err")
+                }
+                e => panic!("{e:?}"),
+            }
+        }
     }
 
     pub fn ping(mut self, addr: String) -> Result<(), Box<dyn Error>> {
@@ -119,19 +146,23 @@ impl Libp2pHost {
 /// Builds the transport that serves as a common ground for all connections.
 /// If a psk is given, the transport will be secured
 fn build_transport(
-    transport: libp2p_relay::client::Transport,
+    base_transport: libp2p_relay::client::Transport,
     kp: &Keypair,
     psk: Option<String>,
 ) -> Result<transport::Boxed<(PeerId, StreamMuxerBox)>, Box<dyn Error>> {
     let noise_config = noise::NoiseAuthenticated::xx(kp)?;
     let yamux_config = YamuxConfig::default();
 
+    // let base_transport = tcp::async_io::Transport::new(tcp::Config::default().nodelay(true));
+
     let maybe_encrypted = match psk {
         Some(psk) => {
             let pk = PreSharedKey::from_str(psk.as_str())?;
-            Either::Left(transport.and_then(move |socket, _| PnetConfig::new(pk).handshake(socket)))
+            Either::Left(
+                base_transport.and_then(move |socket, _| PnetConfig::new(pk).handshake(socket)),
+            )
         }
-        None => Either::Right(transport),
+        None => Either::Right(base_transport),
     };
 
     Ok(maybe_encrypted
@@ -152,40 +183,40 @@ pub fn get_psk(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
-async fn wait_for_reservation(
-    client: &mut Libp2pHost,
-    client_addr: Multiaddr,
-    relay_peer_id: PeerId,
-    is_renewal: bool,
-) {
-    let mut new_listen_addr = false;
-    let mut reservation_req_accepted = false;
-    let client_addr = client_addr.with(Protocol::P2p(client.local_peer_id.into()));
-    loop {
-        match client.swarm.select_next_some().await {
-            SwarmEvent::Behaviour(BehaviourEvent::Relay(
-                relay::client::Event::ReservationReqAccepted {
-                    relay_peer_id: peer_id,
-                    renewal,
-                    ..
-                },
-            )) if relay_peer_id == peer_id && renewal == is_renewal => {
-                reservation_req_accepted = true;
-                if new_listen_addr {
-                    break;
-                }
-            }
-            SwarmEvent::NewListenAddr { address, .. } if address == client_addr => {
-                new_listen_addr = true;
-                if reservation_req_accepted {
-                    break;
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {}
-            e => panic!("{e:?}"),
-        }
-    }
-}
+// async fn wait_for_reservation(
+//     client: &mut Libp2pHost,
+//     client_addr: Multiaddr,
+//     relay_peer_id: PeerId,
+//     is_renewal: bool,
+// ) {
+//     let mut new_listen_addr = false;
+//     let mut reservation_req_accepted = false;
+//     let client_addr = client_addr.with(Protocol::P2p(client.local_peer_id.into()));
+//     loop {
+//         match client.swarm.select_next_some().await {
+//             SwarmEvent::Behaviour(BehaviourEvent::Relay(
+//                 relay::client::Event::ReservationReqAccepted {
+//                     relay_peer_id: peer_id,
+//                     renewal,
+//                     ..
+//                 },
+//             )) if relay_peer_id == peer_id && renewal == is_renewal => {
+//                 reservation_req_accepted = true;
+//                 if new_listen_addr {
+//                     break;
+//                 }
+//             }
+//             SwarmEvent::NewListenAddr { address, .. } if address == client_addr => {
+//                 new_listen_addr = true;
+//                 if reservation_req_accepted {
+//                     break;
+//                 }
+//             }
+//             SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {}
+//             e => panic!("{e:?}"),
+//         }
+//     }
+// }
 
 async fn wait_for_dial(client: &mut Libp2pHost, remote: PeerId) -> bool {
     loop {
