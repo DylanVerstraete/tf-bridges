@@ -1,7 +1,7 @@
 use std::env;
 use std::path::Path;
 use tf_libp2p::{get_psk, Libp2pHost};
-use tf_stellar::{Client, Network};
+// use tf_stellar::{Client, Network};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     host.start(30334).await;
     // });
 
-    host.start_relay_client(relay_addr.to_string(), 30334, &relay_peer_id)
+    host.connect_to_relay(relay_addr.to_string(), &relay_peer_id)
         .await?;
 
     Ok(())
