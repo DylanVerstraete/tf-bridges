@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-libp2p = { version = "0.51.0", features = ["full"] }
 futures = "0.3.26"
 async-trait = "0.1"
 either = "1.8.1"
 libp2p-relay = "0.15.0"
 tokio = { version = "1.8", features = ["macros", "fs", "rt", "rt-multi-thread", "sync", "io-util"] }
-env_logger = { version = "0.10.0", default-features = false, features = ["humantime"] }
 log = "0.4.17"
+
+[dependencies.libp2p]
+version = "0.51.0"
+default-features = false
+features = ["full"]
