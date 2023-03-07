@@ -1,6 +1,14 @@
+use crate::types::{SignRequest, SignResponse};
+use async_trait::async_trait;
 use either::Either;
+use futures::AsyncReadExt;
+use libp2p::futures::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use libp2p::identify::Event as IdentifyEvent;
 use libp2p::ping::Event as PingEvent;
+use libp2p::request_response::{
+    Behaviour as RequestResponseBehaviour, Codec as RequestResponseCodec,
+    Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName, ProtocolSupport,
+};
 use libp2p::{
     core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version},
     identify,
@@ -14,15 +22,18 @@ use libp2p::{
     PeerId, Transport,
 };
 use libp2p_relay::client::Event as RelayEvent;
+use std::io;
+use std::iter::once;
 
 use std::{str::FromStr, time::Duration};
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "Event", event_process = false)]
 pub struct Behaviour {
-    relay: relay::client::Behaviour,
-    ping: ping::Behaviour,
-    identify: identify::Behaviour,
+    pub relay: relay::client::Behaviour,
+    pub ping: ping::Behaviour,
+    pub identify: identify::Behaviour,
+    pub request_response: RequestResponseBehaviour<ExchangeCodec>,
 }
 
 impl Behaviour {
@@ -50,6 +61,12 @@ impl Behaviour {
             None => Either::Right(transport),
         };
 
+        let request_response = RequestResponseBehaviour::new(
+            ExchangeCodec,
+            once((ExchangeProtocol, ProtocolSupport::Full)),
+            RequestResponseConfig::default(),
+        );
+
         Ok((
             Behaviour {
                 ping: ping::Behaviour::new(ping::Config::new()),
@@ -59,6 +76,7 @@ impl Behaviour {
                     "ipfs/0.1.0".to_string(),
                     kp.public(),
                 )),
+                request_response,
             },
             maybe_encrypted
                 .upgrade(Version::V1)
@@ -75,6 +93,7 @@ pub enum Event {
     Identify(IdentifyEvent),
     Relay(RelayEvent),
     Ping(PingEvent),
+    RequestResponse(RequestResponseEvent<SignRequest, SignResponse>),
 }
 
 impl From<IdentifyEvent> for Event {
@@ -92,5 +111,81 @@ impl From<RelayEvent> for Event {
 impl From<PingEvent> for Event {
     fn from(event: PingEvent) -> Self {
         Self::Ping(event)
+    }
+}
+
+impl From<RequestResponseEvent<SignRequest, SignResponse>> for Event {
+    fn from(event: RequestResponseEvent<SignRequest, SignResponse>) -> Self {
+        Self::RequestResponse(event)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExchangeProtocol;
+
+impl ProtocolName for ExchangeProtocol {
+    fn protocol_name(&self) -> &[u8] {
+        b"/stellar/1"
+    }
+}
+
+#[derive(Clone)]
+pub struct ExchangeCodec;
+
+#[async_trait]
+impl RequestResponseCodec for ExchangeCodec {
+    type Protocol = ExchangeProtocol;
+    type Request = SignRequest;
+    type Response = SignResponse;
+
+    async fn read_request<T: Send + Unpin + AsyncRead>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request> {
+        let mut buff = vec![];
+        io.read_to_end(&mut buff).await?;
+
+        let req =
+            SignRequest::try_from(buff.as_slice()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        Ok(req)
+    }
+
+    async fn read_response<T: Send + Unpin + AsyncRead>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response> {
+        let mut buff = vec![];
+        io.read_to_end(&mut buff).await?;
+
+        Ok(buff)
+    }
+
+    async fn write_request<T: Send + Unpin + AsyncWrite>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        req: Self::Request,
+    ) -> io::Result<()> {
+        let b: Vec<u8> = req.try_into().map_err(|_| io::ErrorKind::InvalidInput)?;
+        io.write_all(&b).await?;
+        io.close().await?;
+        Ok(())
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        resp: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&resp).await?;
+        io.close().await?;
+
+        Ok(())
     }
 }
