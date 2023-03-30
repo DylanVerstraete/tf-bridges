@@ -1,4 +1,5 @@
 use crate::{
+    traits::Signer,
     types::{SignRequest, SignResponse},
     Libp2pHost,
 };
@@ -7,6 +8,7 @@ use libp2p::request_response::{
     Event as RequestResponseEvent, Message as RequestResponseMessage, ResponseChannel,
 };
 use log::{error, info};
+use std::error::Error;
 
 use thiserror::Error;
 
@@ -29,7 +31,27 @@ pub struct MessageResponse {
     pub response: SignResponse,
 }
 
-pub async fn handle_request_response(
+pub async fn handle_response(
+    master: SignerMaster,
+    event: RequestResponseEvent<SignRequest, SignResponse>,
+) -> Result<(), Box<dyn Error>> {
+    match event {
+        RequestResponseMessage::Response {
+            request_id,
+            response,
+        } => {
+            info!(
+                "Request response 'Message::Response': {} {:?}",
+                request_id, response
+            );
+            ()
+        }
+        _ => (),
+    }
+    Ok(())
+}
+
+pub async fn handle_request(
     node: &mut Libp2pHost,
     event: RequestResponseEvent<SignRequest, SignResponse>,
 ) -> Result<(), SignRequestResponseError> {
@@ -42,33 +64,17 @@ pub async fn handle_request_response(
             } => {
                 info!("Request response 'Message::Request' for {:?}", request);
 
-                // Send the request on the signing requests channel
-                // For the client now to handle and send back a response
-                node.pending_singing_requests
-                    .0
-                    .send(MessageRequest {
-                        request_id,
-                        reply_channel: channel,
-                        request,
-                    })
+                let response = node
+                    .signer
+                    .sign(&request)
                     .map_err(|_| SignRequestResponseError::Unknown)?;
+
+                node.swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_response(channel, response)?;
             }
-            RequestResponseMessage::Response {
-                request_id,
-                response,
-            } => {
-                info!(
-                    "Request response 'Message::Response': {} {:?}",
-                    request_id, response
-                );
-                node.signing_requests_responses
-                    .0
-                    .send(MessageResponse {
-                        request_id,
-                        response,
-                    })
-                    .map_err(|_| SignRequestResponseError::Unknown)?;
-            }
+            _ => (),
         },
         RequestResponseEvent::OutboundFailure {
             request_id, error, ..

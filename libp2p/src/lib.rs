@@ -1,14 +1,15 @@
 use behaviour::{Behaviour, Event};
 use futures::prelude::*;
+use libp2p::core::PeerId;
 use libp2p::{
     multiaddr::Protocol,
-    request_response::RequestId,
     swarm::{Swarm, SwarmEvent, THandlerErr},
-    Multiaddr, PeerId,
+    Multiaddr,
 };
 use log::{debug, error, info};
 use std::{error::Error, fs, path::Path};
 use tokio::sync::mpsc;
+use traits::Signer;
 use types::SignRequest;
 
 use event::{handle_request_response, MessageRequest, MessageResponse};
@@ -17,36 +18,26 @@ pub use libp2p::identity::Keypair;
 
 pub mod behaviour;
 pub mod event;
+pub mod master;
+pub mod traits;
 pub mod types;
-
 pub struct Libp2pHost {
     pub identity: Keypair,
     pub local_peer_id: PeerId,
     pub swarm: Swarm<Behaviour>,
-
-    pub pending_singing_requests: (
-        mpsc::UnboundedSender<MessageRequest>,
-        mpsc::UnboundedReceiver<MessageRequest>,
-    ),
-
-    pub signing_requests_responses: (
-        mpsc::UnboundedSender<MessageResponse>,
-        mpsc::UnboundedReceiver<MessageResponse>,
-    ),
+    pub signer: Box<dyn Signer>,
 }
 
 impl Libp2pHost {
     pub async fn new(
         keypair: Option<Keypair>,
         psk: Option<String>,
+        signer: Box<dyn Signer>,
     ) -> Result<Self, Box<dyn Error>> {
         let kp = match keypair {
             Some(kp) => kp,
             None => Keypair::generate_ed25519(),
         };
-
-        let (tx, rx) = mpsc::unbounded_channel();
-        let (r_tx, r_rx) = mpsc::unbounded_channel();
 
         let local_peer_id = PeerId::from(kp.public());
         let (behaviour, transport) =
@@ -60,8 +51,7 @@ impl Libp2pHost {
             identity: kp,
             local_peer_id,
             swarm,
-            pending_singing_requests: (tx, rx),
-            signing_requests_responses: (r_tx, r_rx),
+            signer,
         })
     }
 
@@ -75,19 +65,6 @@ impl Libp2pHost {
         self.swarm.listen_on(dest_relay_addr)?;
 
         Ok(())
-    }
-
-    pub async fn send_signing_request(
-        mut self,
-        signing_request: SignRequest,
-        peer: &PeerId,
-    ) -> Result<RequestId, Box<dyn Error>> {
-        debug!("sending request: {:?}", signing_request.clone());
-        Ok(self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(&peer, signing_request))
     }
 
     pub async fn run(mut self) -> Result<(), ()> {

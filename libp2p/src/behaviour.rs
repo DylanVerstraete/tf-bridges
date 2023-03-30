@@ -10,6 +10,7 @@ use libp2p::request_response::{
     Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName, ProtocolSupport,
 };
 use libp2p::{
+    core::PeerId,
     core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version},
     identify,
     identity::Keypair,
@@ -19,7 +20,7 @@ use libp2p::{
     swarm::NetworkBehaviour,
     tcp,
     yamux::YamuxConfig,
-    PeerId, Transport,
+    Transport,
 };
 use libp2p_relay::client::Event as RelayEvent;
 use std::io;
