@@ -38,21 +38,22 @@ pub async fn handle_request_response(
             RequestResponseMessage::Request {
                 request,
                 channel,
-                request_id,
+                request_id: _req_id,
             } => {
                 info!("Request response 'Message::Request' for {:?}", request);
 
-                // Send the request on the signing requests channel
-                // For the client now to handle and send back a response
-                node.pending_singing_requests
-                    .0
-                    .send(MessageRequest {
-                        request_id,
-                        reply_channel: channel,
-                        request,
-                    })
-                    .map_err(|_| SignRequestResponseError::Unknown)?;
-            }
+                if let Some(signer) = &node.signer {
+                    let response = 
+                        signer
+                        .sign(&request)
+                        .map_err(|_| SignRequestResponseError::Unknown)?;
+    
+                    node.swarm
+                        .behaviour_mut()
+                        .request_response
+                        .send_response(channel, response).map_err(|_| SignRequestResponseError::Unknown)?;
+                }
+            },
             RequestResponseMessage::Response {
                 request_id,
                 response,
@@ -61,13 +62,10 @@ pub async fn handle_request_response(
                     "Request response 'Message::Response': {} {:?}",
                     request_id, response
                 );
-                node.signing_requests_responses
-                    .0
-                    .send(MessageResponse {
-                        request_id,
-                        response,
-                    })
-                    .map_err(|_| SignRequestResponseError::Unknown)?;
+                if let Some(_collector) = &node.collector {
+                    // TODO
+                }
+                ()
             }
         },
         RequestResponseEvent::OutboundFailure {

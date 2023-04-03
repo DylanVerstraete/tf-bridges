@@ -1,58 +1,49 @@
 use behaviour::{Behaviour, Event};
 use futures::prelude::*;
 use libp2p::{
+    identity::{Keypair, PeerId},
     multiaddr::Protocol,
-    request_response::RequestId,
-    swarm::{Swarm, SwarmEvent, THandlerErr},
-    Multiaddr, PeerId,
+    swarm::{Swarm, SwarmEvent, THandlerErr, SwarmBuilder},
+    Multiaddr,
 };
 use log::{debug, error, info};
 use std::{error::Error, fs, path::Path};
-use tokio::sync::mpsc;
-use types::SignRequest;
 
-use event::{handle_request_response, MessageRequest, MessageResponse};
-pub use libp2p::identity::ed25519;
-pub use libp2p::identity::Keypair;
+use traits::{Signer, Master};
+use types::SignRequest;
+use event::*;
 
 pub mod behaviour;
 pub mod event;
+pub mod master;
+pub mod signer;
+pub mod traits;
 pub mod types;
-
 pub struct Libp2pHost {
     pub identity: Keypair,
     pub local_peer_id: PeerId,
     pub swarm: Swarm<Behaviour>,
-
-    pub pending_singing_requests: (
-        mpsc::UnboundedSender<MessageRequest>,
-        mpsc::UnboundedReceiver<MessageRequest>,
-    ),
-
-    pub signing_requests_responses: (
-        mpsc::UnboundedSender<MessageResponse>,
-        mpsc::UnboundedReceiver<MessageResponse>,
-    ),
+    pub signer: Option<Box<dyn Signer>>,
+    pub collector: Option<Box<dyn Master>>,
 }
 
 impl Libp2pHost {
     pub async fn new(
         keypair: Option<Keypair>,
         psk: Option<String>,
+        signer: Option<Box<dyn Signer>>,
+        collector: Option<Box<dyn Master>>,
     ) -> Result<Self, Box<dyn Error>> {
         let kp = match keypair {
             Some(kp) => kp,
             None => Keypair::generate_ed25519(),
         };
 
-        let (tx, rx) = mpsc::unbounded_channel();
-        let (r_tx, r_rx) = mpsc::unbounded_channel();
-
         let local_peer_id = PeerId::from(kp.public());
         let (behaviour, transport) =
             Behaviour::new_behaviour_and_transport(&kp, local_peer_id, psk)?;
 
-        let mut swarm = Swarm::with_tokio_executor(transport, behaviour, local_peer_id);
+        let mut swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
@@ -60,8 +51,8 @@ impl Libp2pHost {
             identity: kp,
             local_peer_id,
             swarm,
-            pending_singing_requests: (tx, rx),
-            signing_requests_responses: (r_tx, r_rx),
+            signer,
+            collector
         })
     }
 
@@ -75,19 +66,6 @@ impl Libp2pHost {
         self.swarm.listen_on(dest_relay_addr)?;
 
         Ok(())
-    }
-
-    pub async fn send_signing_request(
-        mut self,
-        signing_request: SignRequest,
-        peer: &PeerId,
-    ) -> Result<RequestId, Box<dyn Error>> {
-        debug!("sending request: {:?}", signing_request.clone());
-        Ok(self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(&peer, signing_request))
     }
 
     pub async fn run(mut self) -> Result<(), ()> {
