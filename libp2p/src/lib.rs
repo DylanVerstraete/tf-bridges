@@ -1,38 +1,38 @@
 use behaviour::{Behaviour, Event};
 use futures::prelude::*;
-use libp2p::core::PeerId;
 use libp2p::{
+    identity::{Keypair, PeerId},
     multiaddr::Protocol,
-    swarm::{Swarm, SwarmEvent, THandlerErr},
+    swarm::{Swarm, SwarmEvent, THandlerErr, SwarmBuilder},
     Multiaddr,
 };
 use log::{debug, error, info};
 use std::{error::Error, fs, path::Path};
-use tokio::sync::mpsc;
-use traits::Signer;
-use types::SignRequest;
 
-use event::{handle_request_response, MessageRequest, MessageResponse};
-pub use libp2p::identity::ed25519;
-pub use libp2p::identity::Keypair;
+use traits::{Signer, Master};
+use types::SignRequest;
+use event::*;
 
 pub mod behaviour;
 pub mod event;
 pub mod master;
+pub mod signer;
 pub mod traits;
 pub mod types;
 pub struct Libp2pHost {
     pub identity: Keypair,
     pub local_peer_id: PeerId,
     pub swarm: Swarm<Behaviour>,
-    pub signer: Box<dyn Signer>,
+    pub signer: Option<Box<dyn Signer>>,
+    pub collector: Option<Box<dyn Master>>,
 }
 
 impl Libp2pHost {
     pub async fn new(
         keypair: Option<Keypair>,
         psk: Option<String>,
-        signer: Box<dyn Signer>,
+        signer: Option<Box<dyn Signer>>,
+        collector: Option<Box<dyn Master>>,
     ) -> Result<Self, Box<dyn Error>> {
         let kp = match keypair {
             Some(kp) => kp,
@@ -43,7 +43,7 @@ impl Libp2pHost {
         let (behaviour, transport) =
             Behaviour::new_behaviour_and_transport(&kp, local_peer_id, psk)?;
 
-        let mut swarm = Swarm::with_tokio_executor(transport, behaviour, local_peer_id);
+        let mut swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
@@ -52,6 +52,7 @@ impl Libp2pHost {
             local_peer_id,
             swarm,
             signer,
+            collector
         })
     }
 

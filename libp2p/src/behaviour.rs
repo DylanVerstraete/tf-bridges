@@ -2,36 +2,37 @@ use crate::types::{SignRequest, SignResponse};
 use async_trait::async_trait;
 use either::Either;
 use futures::AsyncReadExt;
-use libp2p::futures::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use libp2p::identify::Event as IdentifyEvent;
-use libp2p::ping::Event as PingEvent;
-use libp2p::request_response::{
-    Behaviour as RequestResponseBehaviour, Codec as RequestResponseCodec,
-    Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName, ProtocolSupport,
-};
 use libp2p::{
-    core::PeerId,
+    futures::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    identify::Event as IdentifyEvent,
+    identity::PeerId,
     core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version},
     identify,
     identity::Keypair,
     noise, ping,
+    ping::Event as PingEvent,
     pnet::{PnetConfig, PreSharedKey},
     relay,
-    swarm::NetworkBehaviour,
     tcp,
     yamux::YamuxConfig,
     Transport,
+    relay::client::{Event as RelayEvent, Behaviour as RelayBehaviour},
+    request_response::{
+        Behaviour as RequestResponseBehaviour, Codec as RequestResponseCodec,
+        Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName, ProtocolSupport,
+    },
 };
-use libp2p_relay::client::Event as RelayEvent;
+use libp2p_swarm_derive::NetworkBehaviour;
+
 use std::io;
 use std::iter::once;
 
 use std::{str::FromStr, time::Duration};
 
 #[derive(NetworkBehaviour)]
-#[behaviour(out_event = "Event", event_process = false)]
+#[behaviour(out_event = "Event")]
 pub struct Behaviour {
-    pub relay: relay::client::Behaviour,
+    pub relay: RelayBehaviour,
     pub ping: ping::Behaviour,
     pub identify: identify::Behaviour,
     pub request_response: RequestResponseBehaviour<ExchangeCodec>,

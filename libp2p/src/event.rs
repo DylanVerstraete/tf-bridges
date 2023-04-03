@@ -1,5 +1,4 @@
 use crate::{
-    traits::Signer,
     types::{SignRequest, SignResponse},
     Libp2pHost,
 };
@@ -8,7 +7,6 @@ use libp2p::request_response::{
     Event as RequestResponseEvent, Message as RequestResponseMessage, ResponseChannel,
 };
 use log::{error, info};
-use std::error::Error;
 
 use thiserror::Error;
 
@@ -31,27 +29,7 @@ pub struct MessageResponse {
     pub response: SignResponse,
 }
 
-pub async fn handle_response(
-    master: SignerMaster,
-    event: RequestResponseEvent<SignRequest, SignResponse>,
-) -> Result<(), Box<dyn Error>> {
-    match event {
-        RequestResponseMessage::Response {
-            request_id,
-            response,
-        } => {
-            info!(
-                "Request response 'Message::Response': {} {:?}",
-                request_id, response
-            );
-            ()
-        }
-        _ => (),
-    }
-    Ok(())
-}
-
-pub async fn handle_request(
+pub async fn handle_request_response(
     node: &mut Libp2pHost,
     event: RequestResponseEvent<SignRequest, SignResponse>,
 ) -> Result<(), SignRequestResponseError> {
@@ -60,21 +38,35 @@ pub async fn handle_request(
             RequestResponseMessage::Request {
                 request,
                 channel,
-                request_id,
+                request_id: _req_id,
             } => {
                 info!("Request response 'Message::Request' for {:?}", request);
 
-                let response = node
-                    .signer
-                    .sign(&request)
-                    .map_err(|_| SignRequestResponseError::Unknown)?;
-
-                node.swarm
-                    .behaviour_mut()
-                    .request_response
-                    .send_response(channel, response)?;
+                if let Some(signer) = &node.signer {
+                    let response = 
+                        signer
+                        .sign(&request)
+                        .map_err(|_| SignRequestResponseError::Unknown)?;
+    
+                    node.swarm
+                        .behaviour_mut()
+                        .request_response
+                        .send_response(channel, response).map_err(|_| SignRequestResponseError::Unknown)?;
+                }
+            },
+            RequestResponseMessage::Response {
+                request_id,
+                response,
+            } => {
+                info!(
+                    "Request response 'Message::Response': {} {:?}",
+                    request_id, response
+                );
+                if let Some(_collector) = &node.collector {
+                    // TODO
+                }
+                ()
             }
-            _ => (),
         },
         RequestResponseEvent::OutboundFailure {
             request_id, error, ..

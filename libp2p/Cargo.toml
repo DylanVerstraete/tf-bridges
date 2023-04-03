@@ -12,8 +12,9 @@ log = "0.4.17"
 serde = "1.0.152"
 bson = "2.5.0"
 thiserror = "1.0"
+libp2p-swarm-derive = "0.32.0"
 
 [dependencies.libp2p]
 version = "0.51.0"
 default-features = false
-features = ["noise", "kad", "relay", "identify", "mplex", "yamux", "request-response", "autonat", "websocket", "ping"]
+features = ["noise", "kad", "relay", "identify", "mplex", "yamux", "request-response", "autonat", "websocket", "ping", "tcp", "pnet", "async-std", "tokio"]
