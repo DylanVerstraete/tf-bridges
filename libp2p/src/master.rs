@@ -1,15 +1,16 @@
-use crate::{behaviour::Behaviour, SignRequest};
-use libp2p::{identity::PeerId, request_response::RequestId};
+use crate::{behaviour::Behaviour, SignRequest, types::SignResponse, traits::{CollectError, Master}};
+use libp2p::{core::PeerId, request_response::RequestId};
 use log::debug;
 use std::error::Error;
 
 pub struct SignerMaster<'a> {
     pub behaviour: &'a mut Behaviour,
+    pub sign_responses: Vec<SignResponse>,
 }
 
 impl<'a> SignerMaster<'a> {
     pub fn new(behaviour: &'a mut Behaviour) -> Self {
-        Self { behaviour }
+        Self { behaviour, sign_responses: vec![] }
     }
 
     pub async fn send_signing_request(
@@ -22,5 +23,11 @@ impl<'a> SignerMaster<'a> {
             .behaviour
             .request_response
             .send_request(&peer, signing_request))
+    }
+}
+
+impl <'a>Master for SignerMaster<'a> {
+    fn collect(&mut self, response: &SignResponse) -> Result<(), CollectError> {
+        Ok(self.sign_responses.push(response.to_vec()))
     }
 }

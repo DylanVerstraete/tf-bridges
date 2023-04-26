@@ -1,16 +1,20 @@
 use behaviour::{Behaviour, Event};
 use futures::prelude::*;
 use libp2p::{
-    identity::{Keypair, PeerId},
+    identity::Keypair,
     multiaddr::Protocol,
     swarm::{Swarm, SwarmEvent, THandlerErr, SwarmBuilder},
     Multiaddr,
+    request_response::{
+        Event as RequestResponseEvent, Message as RequestResponseMessage,
+    },
+    core::{muxing::StreamMuxerBox, transport, PeerId},
 };
 use log::{debug, error, info};
 use std::{error::Error, fs, path::Path};
 
 use traits::{Signer, Master};
-use types::SignRequest;
+use types::{SignRequest, SignResponse};
 use event::*;
 
 pub mod behaviour;
@@ -19,36 +23,33 @@ pub mod master;
 pub mod signer;
 pub mod traits;
 pub mod types;
-pub struct Libp2pHost {
+
+pub struct Libp2pHost<S, M> {
     pub identity: Keypair,
     pub local_peer_id: PeerId,
     pub swarm: Swarm<Behaviour>,
-    pub signer: Option<Box<dyn Signer>>,
-    pub collector: Option<Box<dyn Master>>,
+    pub signer: S,
+    pub collector: M,
 }
 
-impl Libp2pHost {
+impl<S, M> Libp2pHost<S, M> 
+    where S: Signer, M: Master 
+{
     pub async fn new(
-        keypair: Option<Keypair>,
-        psk: Option<String>,
-        signer: Option<Box<dyn Signer>>,
-        collector: Option<Box<dyn Master>>,
+        behaviour: Behaviour,
+        transport: transport::Boxed<(PeerId, StreamMuxerBox)>,
+        keypair: Keypair,
+        signer: S,
+        collector: M,
     ) -> Result<Self, Box<dyn Error>> {
-        let kp = match keypair {
-            Some(kp) => kp,
-            None => Keypair::generate_ed25519(),
-        };
-
-        let local_peer_id = PeerId::from(kp.public());
-        let (behaviour, transport) =
-            Behaviour::new_behaviour_and_transport(&kp, local_peer_id, psk)?;
+        let local_peer_id = PeerId::from_public_key(&keypair.public());
 
         let mut swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
         Ok(Libp2pHost {
-            identity: kp,
+            identity: keypair,
             local_peer_id,
             swarm,
             signer,
@@ -103,7 +104,7 @@ impl Libp2pHost {
     ) -> Result<(), ()> {
         match event {
             SwarmEvent::Behaviour(Event::RequestResponse(event)) => {
-                handle_request_response(self, event)
+                self.handle_request_response(event)
                     .await
                     .map_err(|err| error!("error while handling request response: {}", err))?;
             }
@@ -139,6 +140,57 @@ impl Libp2pHost {
         }
         Ok(())
     }
+
+    pub async fn handle_request_response (
+        &mut self,
+        event: RequestResponseEvent<SignRequest, SignResponse>,
+    ) -> Result<(), SignRequestResponseError> {
+        match event {
+            RequestResponseEvent::Message { message, .. } => match message {
+                RequestResponseMessage::Request {
+                    request,
+                    channel,
+                    request_id: _req_id,
+                } => {
+                    info!("Request response 'Message::Request' for {:?}", request);
+    
+                        let response = 
+                            self.signer
+                            .sign(&request)
+                            .map_err(|_| SignRequestResponseError::Unknown)?;
+        
+                        self.swarm
+                            .behaviour_mut()
+                            .request_response
+                            .send_response(channel, response).map_err(|_| SignRequestResponseError::Unknown)?;
+                },
+                RequestResponseMessage::Response {
+                    request_id,
+                    response,
+                } => {
+                    info!(
+                        "Request response 'Message::Response': {} {:?}",
+                        request_id, response
+                    );
+                    self.collector.collect(&response).map_err(|_| SignRequestResponseError::Unknown)?
+                }
+            },
+            RequestResponseEvent::OutboundFailure {
+                request_id, error, ..
+            } => {
+                error!(
+                    "Request {} response outbound failure {:?}",
+                    request_id, error
+                );
+            }
+            RequestResponseEvent::InboundFailure { error, .. } => {
+                error!("Request response inbound failure {:?}", error);
+            }
+            RequestResponseEvent::ResponseSent { .. } => (),
+        }
+        Ok(())
+    }
+    
 }
 
 /// Read the pre shared key file from the given ipfs directory

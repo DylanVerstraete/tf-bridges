@@ -5,8 +5,8 @@ use futures::AsyncReadExt;
 use libp2p::{
     futures::{AsyncRead, AsyncWrite, AsyncWriteExt},
     identify::Event as IdentifyEvent,
-    identity::PeerId,
-    core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version},
+    // identity::PeerId,
+    core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version, PeerId},
     identify,
     identity::Keypair,
     noise, ping,
@@ -40,12 +40,18 @@ pub struct Behaviour {
 
 impl Behaviour {
     pub fn new_behaviour_and_transport(
-        kp: &Keypair,
-        peer_id: PeerId,
+        kp: Option<Keypair>,
         psk: Option<String>,
-    ) -> Result<(Self, transport::Boxed<(PeerId, StreamMuxerBox)>), Box<dyn std::error::Error>>
+    ) -> Result<(Self, transport::Boxed<(PeerId, StreamMuxerBox)>, Keypair), Box<dyn std::error::Error>>
     {
-        let noise_config = noise::NoiseAuthenticated::xx(kp)?;
+        let kp = match kp {
+            Some(kp) => kp,
+            None => Keypair::generate_ed25519(),
+        };
+
+        let peer_id = PeerId::from_public_key(&kp.public());
+
+        let noise_config = noise::NoiseAuthenticated::xx(&kp)?;
         let yamux_config = YamuxConfig::default();
 
         let base_transport = tcp::async_io::Transport::new(tcp::Config::default().nodelay(true));
@@ -86,6 +92,7 @@ impl Behaviour {
                 .multiplex(yamux_config)
                 .timeout(Duration::from_secs(20))
                 .boxed(),
+            kp
         ))
     }
 }

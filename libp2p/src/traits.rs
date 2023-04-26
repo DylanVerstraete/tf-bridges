@@ -17,5 +17,5 @@ pub enum CollectError {
 }
 
 pub trait Master {
-    fn collect(&self, response: &SignResponse) -> Result<(), CollectError>;
+    fn collect(&mut self, response: &SignResponse) -> Result<(), CollectError>;
 }
