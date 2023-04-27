@@ -23,11 +23,7 @@ use libp2p::{
     Transport,
 };
 use libp2p_swarm_derive::NetworkBehaviour;
-
-use std::io;
-use std::iter::once;
-
-use std::{str::FromStr, time::Duration};
+use std::{io, iter::once, str::FromStr, time::Duration};
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "Event")]

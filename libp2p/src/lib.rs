@@ -1,10 +1,11 @@
 use behaviour::{Behaviour, Event};
+use event::handle_request_response;
 use event::*;
 use futures::prelude::*;
 use libp2p::{
     identity::{Keypair, PeerId},
     multiaddr::Protocol,
-    request_response::{Event as RequestResponseEvent, Message as RequestResponseMessage},
+    request_response::RequestId,
     swarm::{Swarm, SwarmBuilder, SwarmEvent, THandlerErr},
     Multiaddr,
 };
@@ -72,6 +73,14 @@ where
         Ok(())
     }
 
+    pub fn ping_peer(mut self, peer: String) -> Result<(), Box<dyn Error>> {
+        let p = PeerId::from_bytes(peer.as_bytes())?;
+
+        self.swarm.dial(p)?;
+
+        Ok(())
+    }
+
     pub fn run(mut self) -> Handler {
         let (tx, mut rx) = mpsc::unbounded_channel::<SignRequestForPeers>();
 
@@ -81,6 +90,7 @@ where
                     swarm_event = self.swarm.select_next_some() => self.handle_swarm_event(swarm_event).await.unwrap(),
 
                     request = rx.recv() => {
+                        debug!("received request to send to peers: {:?}", request);
                         let peers = self.swarm.connected_peers().cloned().collect::<Vec<_>>();
                         if let Some(r) = request {
                             for peer in peers {
@@ -92,6 +102,7 @@ where
                                     .behaviour_mut()
                                     .request_response
                                     .send_request(&peer, r.request.clone());
+                                debug!("sent request with id: {:?} to peer {:?}", request_id, peer);
                                 self.responses.insert(request_id, r.tx.clone());
                             }
                         }
@@ -103,34 +114,13 @@ where
         Handler::new(tx)
     }
 
-    pub fn ping_peer(mut self, peer: String) -> Result<(), Box<dyn Error>> {
-        let p = PeerId::from_bytes(peer.as_bytes())?;
-
-        self.swarm.dial(p)?;
-
-        Ok(())
-    }
-
-    pub fn ping(mut self, addr: String) -> Result<(), Box<dyn Error>> {
-        let remote: Multiaddr = addr.parse()?;
-        self.swarm.dial(remote)?;
-        Ok(())
-    }
-
-    pub fn echo(mut self, addr: String) -> Result<(), Box<dyn Error>> {
-        let remote: Multiaddr = addr.parse()?;
-
-        self.swarm.dial(remote)?;
-        Ok(())
-    }
-
     async fn handle_swarm_event(
         &mut self,
         event: SwarmEvent<Event, THandlerErr<Behaviour>>,
     ) -> Result<(), SignRequestResponseError> {
         match event {
             SwarmEvent::Behaviour(Event::RequestResponse(event)) => {
-                self.handle_request_response(event).await?
+                handle_request_response(self, event).await?
             }
             SwarmEvent::Behaviour(Event::Identify(event)) => {
                 info!("found identify event: {:?}", event);
@@ -164,60 +154,6 @@ where
         }
         Ok(())
     }
-
-    pub async fn handle_request_response(
-        &mut self,
-        event: RequestResponseEvent<SignRequest, SignResponse>,
-    ) -> Result<(), SignRequestResponseError> {
-        match event {
-            RequestResponseEvent::Message { message, .. } => match message {
-                RequestResponseMessage::Request {
-                    request,
-                    channel,
-                    request_id: _req_id,
-                } => {
-                    info!("Request response 'Message::Request' for {:?}", request);
-
-                    let response = self
-                        .signer
-                        .sign(&request)
-                        .map_err(|_| SignRequestResponseError::Unknown)?;
-
-                    self.swarm
-                        .behaviour_mut()
-                        .request_response
-                        .send_response(channel, response)
-                        .map_err(|_| SignRequestResponseError::Unknown)?;
-                }
-                RequestResponseMessage::Response {
-                    request_id,
-                    response,
-                } => {
-                    info!(
-                        "Request response 'Message::Response': {} {:?}",
-                        request_id, response
-                    );
-                    // Gather responses
-                    if let Some(tx) = self.responses.remove(&request_id) {
-                        tx.send(response).unwrap();
-                    }
-                }
-            },
-            RequestResponseEvent::OutboundFailure {
-                request_id, error, ..
-            } => {
-                error!(
-                    "Request {} response outbound failure {:?}",
-                    request_id, error
-                );
-            }
-            RequestResponseEvent::InboundFailure { error, .. } => {
-                error!("Request response inbound failure {:?}", error);
-            }
-            RequestResponseEvent::ResponseSent { .. } => (),
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -226,6 +162,7 @@ pub struct SignRequestForPeers {
     tx: UnboundedSender<SignResponse>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Handler {
     tx: UnboundedSender<SignRequestForPeers>,
 }
@@ -249,20 +186,22 @@ impl Handler {
         let mut responses: Vec<SignResponse> = Vec::default();
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
                     return Err(Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out")))
                 }
                 response = rx.recv() => {
                     match response {
                         Some(response) => {
+                            debug!("received response: {:?}", response);
                             responses.push(response);
                         }
                         None => {
-                            log::debug!("no response was received");
+                            debug!("no response was received");
                         }
                     };
 
                     if responses.len() >= min_sigs{
+                        debug!("got enough responses");
                         break;
                     }
                 }

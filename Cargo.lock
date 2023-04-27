@@ -669,6 +669,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "771fe0050b883fcc3ea2359b1a96bcfbc090b7116eae7c3c512c7a083fdf23d3"
 
 [[package]]
+name = "bsc-bridge"
+version = "0.1.0"
+dependencies = [
+ "pretty_env_logger",
+ "tf-libp2p",
+ "tf-stellar",
+ "tokio",
+]
+
+[[package]]
 name = "bson"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4618,16 +4628,6 @@ dependencies = [
  "sodiumoxide",
  "stellar-base",
  "stellar-horizon",
-]
-
-[[package]]
-name = "tf-test"
-version = "0.1.0"
-dependencies = [
- "pretty_env_logger",
- "tf-libp2p",
- "tf-stellar",
- "tokio",
 ]
 
 [[package]]
