@@ -3,11 +3,11 @@ use async_trait::async_trait;
 use either::Either;
 use futures::AsyncReadExt;
 use libp2p::{
-    core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version, PeerId},
+    core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version},
     futures::{AsyncRead, AsyncWrite, AsyncWriteExt},
     identify,
     identify::Event as IdentifyEvent,
-    identity::Keypair,
+    identity::{Keypair, PeerId},
     noise, ping,
     ping::Event as PingEvent,
     pnet::{PnetConfig, PreSharedKey},
@@ -45,7 +45,7 @@ impl Behaviour {
         psk: Option<String>,
     ) -> Result<(Self, transport::Boxed<(PeerId, StreamMuxerBox)>), Box<dyn std::error::Error>>
     {
-        let noise_config = noise::NoiseAuthenticated::xx(&kp)?;
+        let noise_config = noise::NoiseAuthenticated::xx(kp)?;
         let yamux_config = YamuxConfig::default();
 
         let base_transport = tcp::async_io::Transport::new(tcp::Config::default().nodelay(true));
