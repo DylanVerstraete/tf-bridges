@@ -1,38 +1,42 @@
 use behaviour::{Behaviour, Event};
+use event::handle_request_response;
+use event::*;
 use futures::prelude::*;
 use libp2p::{
     identity::{Keypair, PeerId},
     multiaddr::Protocol,
-    swarm::{Swarm, SwarmEvent, THandlerErr, SwarmBuilder},
+    request_response::RequestId,
+    swarm::{Swarm, SwarmBuilder, SwarmEvent, THandlerErr},
     Multiaddr,
 };
 use log::{debug, error, info};
+use std::collections::HashMap;
 use std::{error::Error, fs, path::Path};
-
-use traits::{Signer, Master};
-use types::SignRequest;
-use event::*;
+use tokio::sync::mpsc::{self, UnboundedSender};
+use traits::Signer;
+use types::{SignRequest, SignResponse};
 
 pub mod behaviour;
 pub mod event;
-pub mod master;
-pub mod signer;
 pub mod traits;
 pub mod types;
-pub struct Libp2pHost {
+
+pub struct Libp2pHost<S> {
     pub identity: Keypair,
     pub local_peer_id: PeerId,
     pub swarm: Swarm<Behaviour>,
-    pub signer: Option<Box<dyn Signer>>,
-    pub collector: Option<Box<dyn Master>>,
+    pub signer: S,
+    responses: HashMap<RequestId, UnboundedSender<SignResponse>>,
 }
 
-impl Libp2pHost {
+impl<S> Libp2pHost<S>
+where
+    S: Signer,
+{
     pub async fn new(
         keypair: Option<Keypair>,
         psk: Option<String>,
-        signer: Option<Box<dyn Signer>>,
-        collector: Option<Box<dyn Master>>,
+        signer: S,
     ) -> Result<Self, Box<dyn Error>> {
         let kp = match keypair {
             Some(kp) => kp,
@@ -43,7 +47,8 @@ impl Libp2pHost {
         let (behaviour, transport) =
             Behaviour::new_behaviour_and_transport(&kp, local_peer_id, psk)?;
 
-        let mut swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
+        let mut swarm =
+            SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
@@ -52,7 +57,7 @@ impl Libp2pHost {
             local_peer_id,
             swarm,
             signer,
-            collector
+            responses: HashMap::default(),
         })
     }
 
@@ -68,14 +73,6 @@ impl Libp2pHost {
         Ok(())
     }
 
-    pub async fn run(mut self) -> Result<(), ()> {
-        loop {
-            tokio::select! {
-                swarm_event = self.swarm.select_next_some() => self.handle_swarm_event(swarm_event).await?,
-            }
-        }
-    }
-
     pub fn ping_peer(mut self, peer: String) -> Result<(), Box<dyn Error>> {
         let p = PeerId::from_bytes(peer.as_bytes())?;
 
@@ -84,28 +81,46 @@ impl Libp2pHost {
         Ok(())
     }
 
-    pub fn ping(mut self, addr: String) -> Result<(), Box<dyn Error>> {
-        let remote: Multiaddr = addr.parse()?;
-        self.swarm.dial(remote)?;
-        Ok(())
-    }
+    pub fn run(mut self) -> Handler {
+        let (tx, mut rx) = mpsc::unbounded_channel::<SignRequestForPeers>();
 
-    pub fn echo(mut self, addr: String) -> Result<(), Box<dyn Error>> {
-        let remote: Multiaddr = addr.parse()?;
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    swarm_event = self.swarm.select_next_some() => self.handle_swarm_event(swarm_event).await.unwrap(),
 
-        self.swarm.dial(remote)?;
-        Ok(())
+                    request = rx.recv() => {
+                        debug!("received request to send to peers: {:?}", request);
+                        let peers = self.swarm.connected_peers().cloned().collect::<Vec<_>>();
+                        if let Some(r) = request {
+                            for peer in peers {
+                                //TODO: may be generate the request id first so we can update the
+                                // responses map BEFORE we send the message so we have zero chances that
+                                // we receive a response before we updat the map
+                                let request_id = self
+                                    .swarm
+                                    .behaviour_mut()
+                                    .request_response
+                                    .send_request(&peer, r.request.clone());
+                                debug!("sent request with id: {:?} to peer {:?}", request_id, peer);
+                                self.responses.insert(request_id, r.tx.clone());
+                            }
+                        }
+                    },
+                }
+            }
+        });
+
+        Handler::new(tx)
     }
 
     async fn handle_swarm_event(
         &mut self,
         event: SwarmEvent<Event, THandlerErr<Behaviour>>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), SignRequestResponseError> {
         match event {
             SwarmEvent::Behaviour(Event::RequestResponse(event)) => {
-                handle_request_response(self, event)
-                    .await
-                    .map_err(|err| error!("error while handling request response: {}", err))?;
+                handle_request_response(self, event).await?
             }
             SwarmEvent::Behaviour(Event::Identify(event)) => {
                 info!("found identify event: {:?}", event);
@@ -138,6 +153,62 @@ impl Libp2pHost {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct SignRequestForPeers {
+    request: SignRequest,
+    tx: UnboundedSender<SignResponse>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Handler {
+    tx: UnboundedSender<SignRequestForPeers>,
+}
+
+impl Handler {
+    fn new(tx: UnboundedSender<SignRequestForPeers>) -> Self {
+        Self { tx }
+    }
+
+    pub async fn send(
+        &self,
+        request: SignRequest,
+        min_sigs: usize,
+    ) -> Result<Vec<SignResponse>, Box<dyn Error>> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<SignResponse>();
+
+        let request = SignRequestForPeers { request, tx };
+
+        self.tx.send(request)?;
+
+        let mut responses: Vec<SignResponse> = Vec::default();
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                    return Err(Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out")))
+                }
+                response = rx.recv() => {
+                    match response {
+                        Some(response) => {
+                            debug!("received response: {:?}", response);
+                            responses.push(response);
+                        }
+                        None => {
+                            debug!("no response was received");
+                        }
+                    };
+
+                    if responses.len() >= min_sigs{
+                        debug!("got enough responses");
+                        break;
+                    }
+                }
+            }
+        }
+
+        return Ok(responses);
     }
 }
 

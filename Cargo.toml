@@ -4,6 +4,6 @@ panic = 'unwind'
 [workspace]
 members = [
     'stellar',
-    'test',
+    'bsc-bridge',
     'libp2p'
 ]

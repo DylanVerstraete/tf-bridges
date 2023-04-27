@@ -3,31 +3,27 @@ use async_trait::async_trait;
 use either::Either;
 use futures::AsyncReadExt;
 use libp2p::{
-    futures::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    identify::Event as IdentifyEvent,
-    identity::PeerId,
     core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version},
+    futures::{AsyncRead, AsyncWrite, AsyncWriteExt},
     identify,
-    identity::Keypair,
+    identify::Event as IdentifyEvent,
+    identity::{Keypair, PeerId},
     noise, ping,
     ping::Event as PingEvent,
     pnet::{PnetConfig, PreSharedKey},
     relay,
+    relay::client::{Behaviour as RelayBehaviour, Event as RelayEvent},
+    request_response::{
+        Behaviour as RequestResponseBehaviour, Codec as RequestResponseCodec,
+        Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName,
+        ProtocolSupport,
+    },
     tcp,
     yamux::YamuxConfig,
     Transport,
-    relay::client::{Event as RelayEvent, Behaviour as RelayBehaviour},
-    request_response::{
-        Behaviour as RequestResponseBehaviour, Codec as RequestResponseCodec,
-        Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName, ProtocolSupport,
-    },
 };
 use libp2p_swarm_derive::NetworkBehaviour;
-
-use std::io;
-use std::iter::once;
-
-use std::{str::FromStr, time::Duration};
+use std::{io, iter::once, str::FromStr, time::Duration};
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "Event")]

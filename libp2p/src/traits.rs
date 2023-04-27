@@ -1,21 +1,11 @@
 use crate::types::{SignRequest, SignResponse};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum SignerError {
     #[error("invalid request")]
     InvalidRequest,
 }
 
-pub trait Signer {
+pub trait Signer: Send + Sync + 'static {
     fn sign(&self, message: &SignRequest) -> Result<SignResponse, SignerError>;
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum CollectError {
-    #[error("invalid response")]
-    InvalidResponse,
-}
-
-pub trait Master {
-    fn collect(&self, response: &SignResponse) -> Result<(), CollectError>;
 }

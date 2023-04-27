@@ -1,8 +1,21 @@
 use pretty_env_logger;
 use std::env;
 use std::path::Path;
-use tf_libp2p::{get_psk, master::SignerMaster, Libp2pHost};
+use tf_libp2p::{
+    get_psk,
+    traits::{Signer, SignerError},
+    types::{SignRequest, SignResponse},
+    Libp2pHost,
+};
 use tf_stellar::{fetch_peer_id_from_account, network::StellarNetwork, Client};
+
+pub struct TxSigner {}
+
+impl Signer for TxSigner {
+    fn sign(&self, _message: &SignRequest) -> Result<SignResponse, SignerError> {
+        Ok(vec![])
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,13 +42,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = Client::new(&stellar_secret, StellarNetwork::Testnet)?;
 
     let psk = get_psk(&Path::new("."))?;
-    let mut host = Libp2pHost::new(None, psk, None, None).await?;
+
+    let signer = TxSigner {};
+    let mut host = Libp2pHost::new(None, psk, signer).await?;
 
     host.connect_to_relay(relay_addr.to_string()).await?;
 
-    let master = SignerMaster::new(host.swarm.behaviour_mut());
+    let handler = host.run();
 
-    host.run().await.unwrap();
+    let _repsonses = handler.send(SignRequest::MintRequest(vec![]), 4).await?;
 
     Ok(())
 }
