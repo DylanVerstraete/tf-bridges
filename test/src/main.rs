@@ -1,8 +1,33 @@
 use pretty_env_logger;
 use std::env;
 use std::path::Path;
-use tf_libp2p::{get_psk, master::SignerMaster, Libp2pHost, signer::SignerService, behaviour::Behaviour};
+use tf_libp2p::{
+    behaviour::Behaviour,
+    get_psk,
+    traits::{CollectError, Collector, Signer, SignerError},
+    types::{SignRequest, SignResponse},
+    Libp2pHost,
+};
 use tf_stellar::{fetch_peer_id_from_account, network::StellarNetwork, Client};
+
+pub struct Master {
+    responses: Vec<SignResponse>,
+}
+
+impl Collector for Master {
+    fn collect(&mut self, response: &SignResponse) -> Result<(), CollectError> {
+        self.responses.push(response.clone());
+        Ok(())
+    }
+}
+
+pub struct TxSigner {}
+
+impl Signer for TxSigner {
+    fn sign(&self, message: &SignRequest) -> Result<SignResponse, SignerError> {
+        Ok((vec![]))
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,20 +54,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = Client::new(&stellar_secret, StellarNetwork::Testnet)?;
 
     let psk = get_psk(&Path::new("."))?;
-    
-    
-    let (mut behaviour, transport, kp) =
-    Behaviour::new_behaviour_and_transport(None, psk)?;
-    
-    let master = SignerMaster::new(&mut behaviour);
-    let signer = SignerService::new();
 
-    let mut host = Libp2pHost::new(behaviour, transport, kp, signer, master).await?;
+    let master = Master { responses: vec![] };
+    let signer = TxSigner {};
+
+    let mut host = Libp2pHost::new(kp, psk, signer, master).await?;
 
     host.connect_to_relay(relay_addr.to_string()).await?;
 
-
     host.run().await.unwrap();
+
+    host.push_to_pending_requests(SignRequest::MintRequest(()));
 
     Ok(())
 }

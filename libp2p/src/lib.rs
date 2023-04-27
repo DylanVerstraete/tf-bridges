@@ -1,50 +1,54 @@
 use behaviour::{Behaviour, Event};
+use event::*;
 use futures::prelude::*;
 use libp2p::{
+    core::{muxing::StreamMuxerBox, transport, PeerId},
     identity::Keypair,
     multiaddr::Protocol,
-    swarm::{Swarm, SwarmEvent, THandlerErr, SwarmBuilder},
+    request_response::{Event as RequestResponseEvent, Message as RequestResponseMessage},
+    swarm::{Swarm, SwarmBuilder, SwarmEvent, THandlerErr},
     Multiaddr,
-    request_response::{
-        Event as RequestResponseEvent, Message as RequestResponseMessage,
-    },
-    core::{muxing::StreamMuxerBox, transport, PeerId},
 };
 use log::{debug, error, info};
+use std::{collections::HashSet, sync::mpsc};
 use std::{error::Error, fs, path::Path};
-
-use traits::{Signer, Master};
+use traits::{Collector, Signer};
 use types::{SignRequest, SignResponse};
-use event::*;
 
 pub mod behaviour;
 pub mod event;
-pub mod master;
-pub mod signer;
 pub mod traits;
 pub mod types;
 
-pub struct Libp2pHost<S, M> {
+pub struct Libp2pHost<S> {
     pub identity: Keypair,
     pub local_peer_id: PeerId,
     pub swarm: Swarm<Behaviour>,
     pub signer: S,
-    pub collector: M,
+    pending_requests: mpsc::UnboundedReceiver<SignRequest>,
+    responses: HashSet<RequestId, SignResponse>,
 }
 
-impl<S, M> Libp2pHost<S, M> 
-    where S: Signer, M: Master 
+impl<S> Libp2pHost<S>
+where
+    S: Signer,
 {
     pub async fn new(
-        behaviour: Behaviour,
-        transport: transport::Boxed<(PeerId, StreamMuxerBox)>,
-        keypair: Keypair,
+        keypair: Option<Keypair>,
+        psk: Option<String>,
         signer: S,
-        collector: M,
+        collector: dyn Box<Collector>,
     ) -> Result<Self, Box<dyn Error>> {
-        let local_peer_id = PeerId::from_public_key(&keypair.public());
+        let kp = match keypair {
+            Some(kp) => kp,
+            None => Keypair::generate_ed25519(),
+        };
 
-        let mut swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
+        let local_peer_id = PeerId::from(kp.public());
+        let (behaviour, transport) = Behaviour::new_behaviour_and_transport(local_peer_id, psk)?;
+
+        let mut swarm =
+            SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
@@ -53,7 +57,8 @@ impl<S, M> Libp2pHost<S, M>
             local_peer_id,
             swarm,
             signer,
-            collector
+            pending_requests: mpsc::unbounded(),
+            responses: HashSet::new(),
         })
     }
 
@@ -73,8 +78,21 @@ impl<S, M> Libp2pHost<S, M>
         loop {
             tokio::select! {
                 swarm_event = self.swarm.select_next_some() => self.handle_swarm_event(swarm_event).await?,
+
+                request = self.pending_requests.recv() => self.push_request_to_swarm(request).await?,
             }
         }
+    }
+
+    fn push_request_to_swarm(&mut self, request: SignRequest) -> Result<RequestId, ()> {
+        self.swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&request, request.clone())?;
+    }
+
+    pub fn push_to_pending_requests(&mut self, request: SignRequest) -> Result<(), ()> {
+        self.pending_requests.send(request)?
     }
 
     pub fn ping_peer(mut self, peer: String) -> Result<(), Box<dyn Error>> {
@@ -141,7 +159,7 @@ impl<S, M> Libp2pHost<S, M>
         Ok(())
     }
 
-    pub async fn handle_request_response (
+    pub async fn handle_request_response(
         &mut self,
         event: RequestResponseEvent<SignRequest, SignResponse>,
     ) -> Result<(), SignRequestResponseError> {
@@ -153,17 +171,18 @@ impl<S, M> Libp2pHost<S, M>
                     request_id: _req_id,
                 } => {
                     info!("Request response 'Message::Request' for {:?}", request);
-    
-                        let response = 
-                            self.signer
-                            .sign(&request)
-                            .map_err(|_| SignRequestResponseError::Unknown)?;
-        
-                        self.swarm
-                            .behaviour_mut()
-                            .request_response
-                            .send_response(channel, response).map_err(|_| SignRequestResponseError::Unknown)?;
-                },
+
+                    let response = self
+                        .signer
+                        .sign(&request)
+                        .map_err(|_| SignRequestResponseError::Unknown)?;
+
+                    self.swarm
+                        .behaviour_mut()
+                        .request_response
+                        .send_response(channel, response)
+                        .map_err(|_| SignRequestResponseError::Unknown)?;
+                }
                 RequestResponseMessage::Response {
                     request_id,
                     response,
@@ -172,7 +191,7 @@ impl<S, M> Libp2pHost<S, M>
                         "Request response 'Message::Response': {} {:?}",
                         request_id, response
                     );
-                    self.collector.collect(&response).map_err(|_| SignRequestResponseError::Unknown)?
+                    // Gather responses
                 }
             },
             RequestResponseEvent::OutboundFailure {
@@ -190,7 +209,6 @@ impl<S, M> Libp2pHost<S, M>
         }
         Ok(())
     }
-    
 }
 
 /// Read the pre shared key file from the given ipfs directory

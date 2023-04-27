@@ -3,24 +3,24 @@ use async_trait::async_trait;
 use either::Either;
 use futures::AsyncReadExt;
 use libp2p::{
-    futures::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    identify::Event as IdentifyEvent,
-    // identity::PeerId,
     core::{muxing::StreamMuxerBox, transport, transport::upgrade::Version, PeerId},
+    futures::{AsyncRead, AsyncWrite, AsyncWriteExt},
     identify,
+    identify::Event as IdentifyEvent,
     identity::Keypair,
     noise, ping,
     ping::Event as PingEvent,
     pnet::{PnetConfig, PreSharedKey},
     relay,
+    relay::client::{Behaviour as RelayBehaviour, Event as RelayEvent},
+    request_response::{
+        Behaviour as RequestResponseBehaviour, Codec as RequestResponseCodec,
+        Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName,
+        ProtocolSupport,
+    },
     tcp,
     yamux::YamuxConfig,
     Transport,
-    relay::client::{Event as RelayEvent, Behaviour as RelayBehaviour},
-    request_response::{
-        Behaviour as RequestResponseBehaviour, Codec as RequestResponseCodec,
-        Config as RequestResponseConfig, Event as RequestResponseEvent, ProtocolName, ProtocolSupport,
-    },
 };
 use libp2p_swarm_derive::NetworkBehaviour;
 
@@ -40,17 +40,10 @@ pub struct Behaviour {
 
 impl Behaviour {
     pub fn new_behaviour_and_transport(
-        kp: Option<Keypair>,
+        peer_id: PeerId,
         psk: Option<String>,
-    ) -> Result<(Self, transport::Boxed<(PeerId, StreamMuxerBox)>, Keypair), Box<dyn std::error::Error>>
+    ) -> Result<(Self, transport::Boxed<(PeerId, StreamMuxerBox)>), Box<dyn std::error::Error>>
     {
-        let kp = match kp {
-            Some(kp) => kp,
-            None => Keypair::generate_ed25519(),
-        };
-
-        let peer_id = PeerId::from_public_key(&kp.public());
-
         let noise_config = noise::NoiseAuthenticated::xx(&kp)?;
         let yamux_config = YamuxConfig::default();
 
@@ -92,7 +85,6 @@ impl Behaviour {
                 .multiplex(yamux_config)
                 .timeout(Duration::from_secs(20))
                 .boxed(),
-            kp
         ))
     }
 }

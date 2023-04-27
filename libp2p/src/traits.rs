@@ -16,6 +16,6 @@ pub enum CollectError {
     InvalidResponse,
 }
 
-pub trait Master {
+pub trait Collector {
     fn collect(&mut self, response: &SignResponse) -> Result<(), CollectError>;
 }
