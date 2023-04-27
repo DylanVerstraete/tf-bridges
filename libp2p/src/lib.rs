@@ -1,6 +1,6 @@
 use behaviour::{Behaviour, Event};
 use event::*;
-use futures::prelude::*;
+use futures::{channel::mpsc::UnboundedSender, prelude::*};
 use libp2p::{
     core::{muxing::StreamMuxerBox, transport, PeerId},
     identity::Keypair,
@@ -10,8 +10,9 @@ use libp2p::{
     Multiaddr,
 };
 use log::{debug, error, info};
-use std::{collections::HashSet, sync::mpsc};
+use std::collections::HashSet;
 use std::{error::Error, fs, path::Path};
+use tokio::sync::mpsc;
 use traits::{Collector, Signer};
 use types::{SignRequest, SignResponse};
 
@@ -25,7 +26,10 @@ pub struct Libp2pHost<S> {
     pub local_peer_id: PeerId,
     pub swarm: Swarm<Behaviour>,
     pub signer: S,
-    pending_requests: mpsc::UnboundedReceiver<SignRequest>,
+    pending_requests: (
+        UnboundedReceiver<SignResponse>,
+        UnboundedSender<SignRequest>,
+    ),
     responses: HashSet<RequestId, SignResponse>,
 }
 
@@ -37,7 +41,6 @@ where
         keypair: Option<Keypair>,
         psk: Option<String>,
         signer: S,
-        collector: dyn Box<Collector>,
     ) -> Result<Self, Box<dyn Error>> {
         let kp = match keypair {
             Some(kp) => kp,
@@ -45,19 +48,22 @@ where
         };
 
         let local_peer_id = PeerId::from(kp.public());
-        let (behaviour, transport) = Behaviour::new_behaviour_and_transport(local_peer_id, psk)?;
+        let (behaviour, transport) =
+            Behaviour::new_behaviour_and_transport(local_peer_id, psk, &kp)?;
 
         let mut swarm =
             SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
         Ok(Libp2pHost {
             identity: keypair,
             local_peer_id,
             swarm,
             signer,
-            pending_requests: mpsc::unbounded(),
+            pending_requests: (tx, rx),
             responses: HashSet::new(),
         })
     }

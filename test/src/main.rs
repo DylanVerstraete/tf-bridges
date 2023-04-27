@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let master = Master { responses: vec![] };
     let signer = TxSigner {};
 
-    let mut host = Libp2pHost::new(kp, psk, signer, master).await?;
+    let mut host = Libp2pHost::new(kp, psk, signer).await?;
 
     host.connect_to_relay(relay_addr.to_string()).await?;
 

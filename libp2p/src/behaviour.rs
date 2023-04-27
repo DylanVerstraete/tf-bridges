@@ -40,6 +40,7 @@ pub struct Behaviour {
 
 impl Behaviour {
     pub fn new_behaviour_and_transport(
+        kp: &Keypair,
         peer_id: PeerId,
         psk: Option<String>,
     ) -> Result<(Self, transport::Boxed<(PeerId, StreamMuxerBox)>), Box<dyn std::error::Error>>
